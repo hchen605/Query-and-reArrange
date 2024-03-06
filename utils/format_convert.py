@@ -1,6 +1,10 @@
+#import sys
+
 import numpy as np
 import pretty_midi as pyd
-
+import os
+from scipy.interpolate import interp1d
+from dataset import EMBED_PROGRAM_MAPPING, SLAKH_PROGRAM_MAPPING
 
 def matrix2midi(matrices, programs, init_tempo=120, time_start=0):
         """
@@ -192,3 +196,122 @@ def mixture2midi(grid_mix, tempo=100):
     pr = grid2pr(grid_mix.reshape(-1, 32, 6).detach().cpu().numpy(), max_note_count=32)
     recon = matrix2midi(pr[np.newaxis, ...], [0], tempo)
     return recon
+
+def slakh_program_mapping(self, programs):
+        return np.array([EMBED_PROGRAM_MAPPING[SLAKH_PROGRAM_MAPPING[program]] for program in programs])
+
+def midi2load(midi_data):
+
+    #midi_data = pyd.PrettyMIDI(midi_file_path)
+    #_, tempo = midi_data.get_tempo_changes()
+
+    #all_src_midi = pyd.PrettyMIDI(os.path.join(slakh_split, song, 'all_src.mid'))
+    for ts in midi_data.time_signature_changes:
+        in_ts = (((ts.numerator == 2) or (ts.numerator == 4)) and (ts.denominator == 4))
+        assert in_ts == 1, 'Input time signature not 2/4 or 4/4'
+
+    # Iterate through each instrument (track) in the MIDI file
+    track_midi = []
+    programs = []
+    for i, instrument in enumerate(midi_data.instruments):
+        # Create a new PrettyMIDI object
+        individual_midi = pyd.PrettyMIDI()
+        if instrument.is_drum:
+            continue
+        # Add the instrument to the new MIDI object
+        individual_midi.instruments.append(instrument)
+        # Construct the output file name
+        output_file_name = f"track_{i + 1}.mid"
+        # Save the individual track to a MIDI file
+        #individual_midi.write(output_file_name)
+        track_midi.append(individual_midi)
+        programs.append(instrument.program)
+        # Print the program number (instrument number) for the current track
+        #print(f"Track {i + 1} - Program Number: {instrument.program}")
+
+    
+    ACC = 4 # quantize each beat as 4 positions
+    SAMPLE_BAR_LEN = 8
+    sample_len = 16 * SAMPLE_BAR_LEN
+    #tracks = os.path.join(slakh_split, song, 'MIDI')
+    #track_names = os.listdir(tracks)
+    #track_midi = [pyd.PrettyMIDI(os.path.join(tracks, track)) for track in track_names]
+    #track_meta = yaml.safe_load(open(os.path.join(slakh_split, song, 'metadata.yaml'), 'r'))['stems']
+
+    if len(midi_data.get_beats()) >= max([len(midi.get_beats()) for midi in track_midi]):
+        beats = midi_data.get_beats()
+        downbeats = midi_data.get_downbeats()
+    else:
+        beats = track_midi[np.argmax([len(midi.get_beats()) for midi in track_midi])].get_beats()
+        downbeats = track_midi[np.argmax([len(midi.get_beats()) for midi in track_midi])].get_downbeats()
+
+    beats = np.append(beats, beats[-1] + (beats[-1] - beats[-2]))
+    quantize = interp1d(np.array(range(0, len(beats))) * ACC, beats, kind='linear')
+    quaver = quantize(np.array(range(0, (len(beats) - 1) * ACC)))
+    
+    pr_matrices = []
+    #programs = []
+    dynamic_matrices = []
+    
+    break_flag = 0
+    for idx, midi in enumerate(track_midi):
+        #meta = track_meta[track_names[idx].replace('.mid', '')]
+        if midi.instruments[0].is_drum:
+            continue    #let's skip drum for now
+        else:
+            pr_matrix, _, track_qt = midi2matrix_with_dynamics(midi, quaver)
+            if track_qt[0] > .2:
+                break_flag = 1
+                break
+            pr_matrices.append(pr_matrix[..., 0])
+            dynamic_matrices.append(pr_matrix[..., 1:])
+            #programs.append(midi.program)
+    #if break_flag:
+    #    continue    #skip the pieces with very large quantization error. This pieces are possibly triple-quaver songs
+    
+    pr_matrices = np.concatenate(pr_matrices, axis=0)
+    programs = np.array(programs)
+    dynamic_matrices = np.concatenate(dynamic_matrices, axis=0)
+
+    downbeat_indicator = np.array([int(t in downbeats) for t in quaver])
+    # np.savez_compressed(os.path.join(save_split, f'{song}.npz'),\
+    #                 tracks = pr_matrices,\
+    #                 programs = programs,\
+    #                 db_indicator = downbeat_indicator,\
+    #                 dynamics = dynamic_matrices)
+        
+
+    tracks = pr_matrices   #(n_track, time, 128)
+
+    memory = dict({'tracks': [],
+                    'programs': [],
+                    'dynamics': [],
+                    'dir': []
+                    })
+    #anchor_list = []
+    """clipping""" 
+    # if (self.mode == 'train') and (self.split =='validation'):
+    #     # during model training, no overlapping for validation set
+    #     for i in range(0, tracks.shape[1], sample_len):
+    #         if i + sample_len >= tracks.shape[1]:
+    #             break
+    #         self.anchor_list.append((len(self.memory['tracks']), i))  #(song_id, start, total_length)
+    # else:
+    # otherwise, hop size is 1-bar
+    downbeats = np.nonzero(downbeat_indicator)[0]
+    # for i in range(0, len(downbeats), 1):
+    #     if downbeats[i] + sample_len >= tracks.shape[1]:
+    #         break
+    #     self.anchor_list.append((len(memory['tracks']), downbeats[i]))  #(song_id, start)
+    # #self.anchor_list.append((len(self.memory['tracks']), max(0, (tracks.shape[1]-sample_len))))
+    # memory['tracks'].append(tracks)
+    # memory['programs'].append(slakh_program_mapping(programs))
+    # memory['dir'].append(midi_file_path)
+
+    # memory['dynamics'].append(dynamic_matrices)
+    programs = np.array([EMBED_PROGRAM_MAPPING[SLAKH_PROGRAM_MAPPING[program]] for program in programs])#slakh_program_mapping(programs)
+    midi_file_path = ''
+    tracks = tracks[:,:sample_len]
+    dynamic_matrices = dynamic_matrices[:,:sample_len]
+
+    return tracks, programs, dynamic_matrices, midi_file_path

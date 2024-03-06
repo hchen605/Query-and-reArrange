@@ -6,10 +6,11 @@ from torch.utils.data import DataLoader
 from model import Query_and_reArrange
 from dataset import Slakh2100_Pop909_Dataset, collate_fn_inference, EMBED_PROGRAM_MAPPING
 SLAKH_CLASS_MAPPING = {v: k for k, v in EMBED_PROGRAM_MAPPING.items()}
-from utils.format_convert import matrix2midi_with_dynamics, dataitem2midi
+from utils.format_convert import matrix2midi_with_dynamics, dataitem2midi, midi2load
 from utils.inferring import mixture_function_prior, search_reference, velocity_adaption
 import datetime
 import warnings
+import pretty_midi as pyd
 warnings.filterwarnings("ignore")
 
 POP909_DIR = "./data/POP909"
@@ -28,7 +29,7 @@ model.eval()
 ## Re-Instrumentation
 
 # load piano dataset. A piano piece x is the donor of content.
-x_set = Slakh2100_Pop909_Dataset(SLAKH2100_DIR, None, 16*SAMPLE_BAR_LEN, debug_mode=True, split='test', mode='inference', with_dynamics=True)
+#x_set = Slakh2100_Pop909_Dataset(SLAKH2100_DIR, None, 16*SAMPLE_BAR_LEN, debug_mode=True, split='test', mode='inference', with_dynamics=True)
 # load multi-track dataset. A multi-track piece y is the donor of style.
 y_set = Slakh2100_Pop909_Dataset(SLAKH2100_DIR, None, 16*SAMPLE_BAR_LEN, debug_mode=True, split='validation', mode='inference', with_dynamics=True)
 # Prepare for the heuristic sampling of y
@@ -36,14 +37,20 @@ y_set_loader = DataLoader(y_set, batch_size=1, shuffle=False, collate_fn=lambda 
 y_prior_set = mixture_function_prior(y_set_loader)
 
 # get a random x sample
-IDX = np.random.randint(len(x_set))
-x = x_set.__getitem__(IDX)
+#IDX = np.random.randint(len(x_set))
+#x = x_set.__getitem__(IDX)
+midi_file_path = 'demo/test/test.mid'
+midi_data = pyd.PrettyMIDI(midi_file_path)
+_, tempo = midi_data.get_tempo_changes()
+tempo = int(tempo[0])
+x = midi2load(midi_data)
 (x_mix, x_instr, x_fp, x_ft), x_dyn, x_dir = collate_fn_inference(batch = [(x)], device = DEVICE)
 # save x
-save_path = os.path.join(SAVE_DIR, f"reinstrumentation-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')[2:]}")
+#save_path = os.path.join(SAVE_DIR, f"reinstrumentation-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')[2:]}")
+save_path = os.path.join(SAVE_DIR, 'test')
 if not os.path.exists(save_path):
     os.makedirs(save_path)
-x_recon = dataitem2midi(*x, SLAKH_CLASS_MAPPING)
+x_recon = dataitem2midi(*x, SLAKH_CLASS_MAPPING, tempo=tempo)
 x_recon.write(os.path.join(save_path, '01_source.mid'))
 print(f'saved to {save_path}.')
 
@@ -70,6 +77,6 @@ output = np.stack([output, velocity, cc], axis=-1)
 midi_recon = matrix2midi_with_dynamics(
     matrices=output, 
     programs=[SLAKH_CLASS_MAPPING[item.item()] for item in y_instr[0]], 
-    init_tempo=100)
+    init_tempo=tempo)
 midi_recon.write(os.path.join(save_path, '03_target.mid'))
 print(f'saved to {save_path}.')
